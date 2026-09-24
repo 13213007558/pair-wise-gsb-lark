@@ -13,7 +13,7 @@ from .lexer import Token
 from .parser_frontends import ScanMatch
 from .tree import ParseTree, Tree
 from .utils import logger, TextSlice
-from .visitors import Discard, Transformer, Transformer_NonRecursive, Visitor, v_args
+from .visitors import AsyncTransformer, Discard, Transformer, Transformer_NonRecursive, Visitor, v_args
 
 __version__: str = "1.3.1"
 
@@ -33,6 +33,7 @@ __all__ = (
     "Tree",
     "logger",
     "Discard",
+    "AsyncTransformer",
     "Transformer",
     "Transformer_NonRecursive",
     "TextSlice",

@@ -102,6 +102,9 @@ Example:
 
 .. autoclass:: lark.visitors.Transformer_InPlaceRecursive
 
+.. autoclass:: lark.visitors.AsyncTransformer
+    :members: transform
+
 Useful Utilities
 ----------------
 

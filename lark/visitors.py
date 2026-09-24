@@ -1,3 +1,4 @@
+import asyncio
 from typing import TypeVar, Tuple, List, Callable, Generic, Type, Union, Optional, Any, cast
 from abc import ABC
 
@@ -8,7 +9,7 @@ from .lexer import Token
 
 ###{standalone
 from functools import wraps, update_wrapper
-from inspect import getmembers, getmro
+from inspect import getmembers, getmro, isawaitable
 
 _Return_T = TypeVar('_Return_T')
 _Return_V = TypeVar('_Return_V')
@@ -338,6 +339,113 @@ class Transformer_InPlaceRecursive(Transformer[_Leaf_T, _Return_T]):
     def _transform_tree(self, tree):
         tree.children = list(self._transform_children(tree.children))
         return self._call_userfunc(tree)
+
+
+class AsyncTransformer(Transformer[_Leaf_T, _Return_T]):
+    """Same as Transformer, but supports asynchronous (``async def``) callbacks.
+
+    - The entry point, ``transform``, is a coroutine and must be awaited.
+    - Callbacks may be regular methods or ``async def`` methods; both can be mixed freely.
+    - Sibling subtrees are processed concurrently. A rule callback is only called
+      once all of its children have completed, and the resulting children list
+      preserves the order of the original tree.
+    - If a subtree fails, its unfinished siblings are cancelled and awaited,
+      and the error propagates as a ``VisitError``, like in ``Transformer``.
+    - Like ``Transformer``, shared subtrees are visited once per occurrence,
+      with no identity-based caching of the callbacks.
+
+    Parameters:
+        visit_tokens (bool, optional): Should the transformer visit tokens in addition to rules.
+                                       Defaults to ``True``.
+        max_concurrency (int, optional): Maximum number of callbacks allowed to run at
+                                         the same time. ``None`` (default) means no limit.
+    """
+
+    def __init__(self, visit_tokens: bool=True, max_concurrency: Optional[int]=None) -> None:
+        super().__init__(visit_tokens)
+        if max_concurrency is not None and max_concurrency < 1:
+            raise ValueError("max_concurrency must be a positive integer or None")
+        self.max_concurrency = max_concurrency
+
+    async def transform(self, tree: Tree[_Leaf_T]) -> _Return_T:
+        "Transform the given tree, and return the final result"
+        semaphore = asyncio.Semaphore(self.max_concurrency) if self.max_concurrency is not None else None
+        res = await self._transform_children_async([tree], semaphore)
+        if not res:
+            return None     # type: ignore[return-value]
+        assert len(res) == 1
+        return res[0]
+
+    async def _call_userfunc_async(self, tree, new_children):
+        # Assumes tree is already transformed
+        try:
+            f = getattr(self, tree.data)
+        except AttributeError:
+            result = self.__default__(tree.data, new_children, tree.meta)
+            if isawaitable(result):
+                result = await result
+            return result
+        else:
+            try:
+                wrapper = getattr(f, 'visit_wrapper', None)
+                if wrapper is not None:
+                    result = f.visit_wrapper(f, tree.data, new_children, tree.meta)
+                else:
+                    result = f(new_children)
+                if isawaitable(result):
+                    result = await result
+                return result
+            except GrammarError:
+                raise
+            except Exception as e:
+                raise VisitError(tree.data, tree, e)
+
+    async def _call_userfunc_token_async(self, token):
+        try:
+            f = getattr(self, token.type)
+        except AttributeError:
+            result = self.__default_token__(token)
+            if isawaitable(result):
+                result = await result
+            return result
+        else:
+            try:
+                result = f(token)
+                if isawaitable(result):
+                    result = await result
+                return result
+            except GrammarError:
+                raise
+            except Exception as e:
+                raise VisitError(token.type, token, e)
+
+    async def _transform_child_async(self, child, semaphore):
+        if isinstance(child, Tree):
+            children = await self._transform_children_async(child.children, semaphore)
+            if semaphore is None:
+                return await self._call_userfunc_async(child, children)
+            async with semaphore:
+                return await self._call_userfunc_async(child, children)
+        elif self.__visit_tokens__ and isinstance(child, Token):
+            if semaphore is None:
+                return await self._call_userfunc_token_async(child)
+            async with semaphore:
+                return await self._call_userfunc_token_async(child)
+        else:
+            return child
+
+    async def _transform_children_async(self, children, semaphore):
+        tasks = [asyncio.ensure_future(self._transform_child_async(c, semaphore)) for c in children]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            # A child failed (or we were cancelled): cancel the unfinished
+            # siblings and wait for them to wind down before propagating.
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        return [r for r in results if r is not Discard]
 
 
 # Visitors
