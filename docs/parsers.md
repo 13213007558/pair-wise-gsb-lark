@@ -74,6 +74,38 @@ Tips for writing a conforming grammar:
 
 For a better understanding of these constraints, it's recommended to learn how a SLR parser works. SLR is very similar to LALR but much simpler.
 
+### Incremental parsing
+
+For editor-like use cases, where the input changes a few tokens at a time,
+`lark.incremental.IncrementalParseSession` provides an explicit incremental
+parsing session on top of the LALR parser. Instead of re-parsing the whole
+input on every change, the session keeps resumable checkpoints from the
+previous parse, resumes from the earliest affected token, and reuses results
+for rules whose inputs are unchanged.
+
+```python
+from lark import Lark, IncrementalParseSession
+
+lark = Lark(grammar, parser='lalr')
+session = IncrementalParseSession(lark)
+
+tokens = list(lark.lex(text))
+tree = session.parse(tokens)
+
+# After an edit: replace tokens [start, end) with new_tokens
+tree = session.update(start, end, new_tokens)
+```
+
+The session consumes token sequences (incremental lexing is out of scope),
+and guarantees results identical to a full re-parse of the same token
+sequence, including positions. On invalid input it raises the usual
+`UnexpectedToken` diagnostics, and the same session can be used to continue
+after the input is fixed.
+
+If the Lark instance has a transformer, the session must be created with
+`assume_pure_callbacks=True`, declaring that the transformer is a pure
+function of its inputs; otherwise construction is refused.
+
 ## CYK Parser
 
 A [CYK parser](https://www.wikiwand.com/en/CYK_algorithm) can parse any context-free grammar at O(n^3*|G|).

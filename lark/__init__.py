@@ -8,6 +8,7 @@ from .exceptions import (
     UnexpectedInput,
     UnexpectedToken,
 )
+from .incremental import IncrementalParseSession, IncrementalParseStats
 from .lark import Lark
 from .lexer import Token
 from .parser_frontends import ScanMatch
@@ -19,6 +20,8 @@ __version__: str = "1.3.1"
 
 __all__ = (
     "GrammarError",
+    "IncrementalParseSession",
+    "IncrementalParseStats",
     "LarkError",
     "LexError",
     "ParseError",
