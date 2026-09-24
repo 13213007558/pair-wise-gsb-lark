@@ -63,3 +63,21 @@ handles_ambiguity
 -----------------
 
 .. autofunction:: lark.parsers.earley_forest.handles_ambiguity
+
+ForestTopKIterator
+-----------------
+
+``ForestTopKIterator`` lazily enumerates the parse trees of a forest,
+cheapest first, according to per-rule costs. Only the combinations of
+derivations needed for the requested trees are expanded, so it can be
+used on forests that represent exponentially many trees. Equal-cost
+derivations are ordered deterministically, using stable rule identities
+and branch indices. If the forest contains a reachable zero-cost cycle
+(e.g. from nullable recursion), infinitely many derivations share the
+same cost, and the iterator raises ``InfiniteAmbiguityError`` instead of
+guessing an order.
+
+.. autoclass:: lark.parsers.earley_forest.ForestTopKIterator
+   :members: with_costs, expansions
+
+.. autoexception:: lark.parsers.earley_forest.InfiniteAmbiguityError

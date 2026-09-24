@@ -7,6 +7,7 @@ Full reference and more details is here:
 https://web.archive.org/web/20190616123959/http://www.bramvandersanden.com/post/2014/06/shared-packed-parse-forest/
 """
 
+import heapq
 from typing import Type, AbstractSet
 from random import randint
 from collections import deque
@@ -18,6 +19,8 @@ from ..parse_tree_builder import AmbiguousIntermediateExpander
 from ..visitors import Discard
 from ..utils import logger, OrderedSet
 from ..tree import Tree
+from ..lexer import Token
+from ..exceptions import LarkError
 
 class ForestNode:
     pass
@@ -800,3 +803,518 @@ class ForestToPyDotVisitor(ForestVisitor):
             child_graph_node_id = str(id(child))
             child_graph_node = self.graph.get_node(child_graph_node_id)[0]
             self.graph.add_edge(self.pydot.Edge(graph_node, child_graph_node))
+
+
+class InfiniteAmbiguityError(LarkError):
+    """Raised when a parse forest admits infinitely many derivations of the
+    same cost (e.g. because of a zero-cost cycle caused by nullable
+    recursion), so a complete cost-ordered enumeration of its trees cannot
+    be guaranteed."""
+
+
+def _default_tree_key(tree):
+    if isinstance(tree, Tree):
+        return (tree.data, tuple(_default_tree_key(child) for child in tree.children))
+    if isinstance(tree, Token):
+        return (tree.type, tree.value)
+    return tree
+
+
+class _TopKEdge:
+    """Bookkeeping for a single packed node during top-k enumeration."""
+    __slots__ = ('parent', 'packed', 'weight', 'branch', 'children',
+                 'sym_positions', 'visited', 'acc', 'remaining')
+
+    def __init__(self, parent, packed, weight, branch, children):
+        self.parent = parent        # SymbolNode owning the packed node
+        self.packed = packed        # the PackedNode itself
+        self.weight = weight        # rule cost counted at this packed node
+        self.branch = branch        # index of the packed node within parent.children
+        self.children = children    # child forest nodes (SymbolNode or TokenNode)
+        self.sym_positions = [i for i, c in enumerate(children) if isinstance(c, SymbolNode)]
+        self.visited = set()        # candidate index tuples already pushed
+
+
+class ForestTopKIterator:
+    """Lazily enumerates the parse trees of an SPPF, from cheapest to most
+    expensive, according to per-rule costs.
+
+    The cost of a tree is the sum of the costs of its rule applications:
+    every time a rule is applied in the tree it contributes its cost once,
+    even when the corresponding sub-forest is shared by many derivations.
+
+    Enumeration is lazy: only the combinations of derivations needed to
+    produce the requested trees are ever expanded, so the iterator can be
+    used on forests that compactly represent exponentially many trees (or,
+    with positive-cost cycles, infinitely many).
+
+    Ties between derivations of equal cost are broken deterministically,
+    using stable rule identities (the origin name of a rule and its order
+    amongst same-named rules) and the branch index of each packed node
+    within its symbol node. Object addresses are never used for ordering.
+
+    Parameters:
+        root: The root ``SymbolNode`` of an SPPF, as returned by parsing
+            with ``ambiguity='forest'``.
+        rule_cost: The cost of each rule. May be a callable ``rule -> number``,
+            or a dict mapping rules to costs (rules missing from the dict
+            default to a cost of 1). By default every rule costs 1, so trees
+            are ordered by their number of rule applications. Costs must be
+            non-negative.
+        k: If given, at most ``k`` trees are produced. Otherwise the
+            iterator is unbounded.
+        dedup: If True, structurally equal trees are only yielded once, even
+            when they result from distinct derivations. May also be a
+            callable ``tree -> hashable`` to customize the deduplication key.
+            By default (False) every derivation is yielded.
+        tree_class: The tree class used to build the resulting trees.
+
+    Raises:
+        InfiniteAmbiguityError: If the forest contains a reachable,
+            productive cycle whose total rule cost is zero. Such a cycle
+            produces infinitely many derivations of the same cost, so a
+            complete cost ordering cannot be guaranteed.
+
+    Attributes:
+        expansions: The number of derivations materialized so far. Allows
+            verifying that enumeration stays lazy.
+    """
+
+    def __init__(self, root, rule_cost=None, k=None, dedup=False, tree_class=Tree):
+        if not isinstance(root, SymbolNode):
+            raise TypeError("ForestTopKIterator expects the root SymbolNode of an SPPF")
+        if k is not None and k < 0:
+            raise ValueError("k must be non-negative")
+        if rule_cost is None:
+            cost_fn = lambda rule: 1
+        elif callable(rule_cost):
+            cost_fn = rule_cost
+        else:
+            cost_fn = lambda rule: rule_cost.get(rule, 1)
+
+        self.root = root
+        self.k = k
+        self.tree_class = tree_class
+        if dedup is False:
+            self._dedup_key = None
+        elif dedup is True:
+            self._dedup_key = _default_tree_key
+        elif callable(dedup):
+            self._dedup_key = dedup
+        else:
+            raise TypeError("dedup must be a bool or a callable")
+
+        ### Collect the forest, in a deterministic order.
+        symbol_nodes = []
+        seen = set()
+        stack = [root]
+        edges = {}
+        rules = {}
+        while stack:
+            node = stack.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            symbol_nodes.append(node)
+            node_edges = []
+            for branch, packed in enumerate(node.children):
+                if node.is_intermediate:
+                    # A rule application is counted only once, at the packed
+                    # node that completes it (same convention as ForestSumVisitor).
+                    weight = 0
+                else:
+                    weight = cost_fn(packed.rule)
+                    if weight < 0:
+                        raise ValueError("Rule costs must be non-negative, got %r for rule %s" % (weight, packed.rule))
+                rules.setdefault(id(packed.rule), packed.rule)
+                node_edges.append(_TopKEdge(node, packed, weight, branch, packed.children))
+                for child in packed.children:
+                    if isinstance(child, SymbolNode):
+                        stack.append(child)
+            edges[id(node)] = node_edges
+        self._edges = edges
+
+        ### Stable, address-free rule identities: rank rules by (origin name, order).
+        self._rule_rank = {rid: rank for rank, (rid, rule) in enumerate(
+            sorted(rules.items(), key=lambda item: (item[1].origin.name, item[1].order)))}
+
+        ### Min-cost fixpoint (Dijkstra over the AND-OR graph; costs are non-negative).
+        best = {}
+        dependents = {}
+        heap = []
+        tentative = {}
+        for node in symbol_nodes:
+            for edge in edges[id(node)]:
+                edge.acc = edge.weight
+                edge.remaining = 0
+                for child in edge.children:
+                    if isinstance(child, SymbolNode):
+                        edge.remaining += 1
+                        dependents.setdefault(id(child), []).append(edge)
+                if edge.remaining == 0:
+                    self._relax(node, edge.acc, tentative, heap)
+        while heap:
+            cost, _, node = heapq.heappop(heap)
+            if id(node) in best:
+                continue
+            best[id(node)] = cost
+            for edge in dependents.get(id(node), ()):
+                edge.acc += cost
+                edge.remaining -= 1
+                if edge.remaining == 0:
+                    self._relax(edge.parent, edge.acc, tentative, heap)
+
+        ### Nodes that can take part in a complete derivation of the root.
+        reachable = {id(root)}
+        queue = deque([root])
+        while queue:
+            node = queue.popleft()
+            for edge in edges[id(node)]:
+                if all(not isinstance(c, SymbolNode) or id(c) in best for c in edge.children):
+                    for child in edge.children:
+                        if isinstance(child, SymbolNode) and id(child) not in reachable:
+                            reachable.add(id(child))
+                            queue.append(child)
+
+        ### A reachable zero-cost cycle yields infinitely many derivations of
+        #   the same cost: the complete ordering contract cannot be satisfied.
+        residual = {}
+        for node in symbol_nodes:
+            if id(node) not in reachable:
+                continue
+            for edge in edges[id(node)]:
+                if edge.weight != 0:
+                    continue
+                sym_children = [c for c in edge.children if isinstance(c, SymbolNode)]
+                for pos, child in enumerate(sym_children):
+                    if id(child) not in reachable:
+                        continue
+                    others = sym_children[:pos] + sym_children[pos + 1:]
+                    if all(best.get(id(other), float("inf")) == 0 for other in others):
+                        residual.setdefault(id(node), []).append(child)
+        if self._has_cycle(residual):
+            raise InfiniteAmbiguityError(
+                "The forest contains a reachable cycle of zero-cost rules "
+                "(e.g. from nullable recursion), producing infinitely many "
+                "derivations of the same cost. A complete cost ordering "
+                "cannot be guaranteed.")
+
+        ### Lazy enumeration state.
+        self.expansions = 0
+        self._seq = 0
+        self._root_pos = 0
+        self._yielded = 0
+        self._seen_keys = set()
+
+        ### Any reachable productive cycle (even with positive cost) means
+        #   infinitely many derivations; those are enumerated with a global
+        #   best-first search. Acyclic forests use demand-driven streams,
+        #   which only ever expand the combinations needed for the trees
+        #   that are actually requested.
+        productive = {}
+        for node in symbol_nodes:
+            if id(node) not in reachable:
+                continue
+            for edge in edges[id(node)]:
+                if all(not isinstance(c, SymbolNode) or id(c) in best for c in edge.children):
+                    for child in edge.children:
+                        if isinstance(child, SymbolNode):
+                            productive.setdefault(id(node), []).append(child)
+        self._cyclic = self._has_cycle(productive)
+        if self._cyclic:
+            self._derived = {nid: [] for nid in reachable}
+            self._dependents = {}
+            self._heap = []
+            for nid in reachable:
+                for edge in edges[nid]:
+                    for pos, child in enumerate(edge.children):
+                        if isinstance(child, SymbolNode):
+                            self._dependents.setdefault(id(child), []).append((edge, pos))
+                    if not edge.sym_positions:
+                        self._push_candidate(edge, ())
+        else:
+            self._streams = {}
+
+    @staticmethod
+    def _relax(node, cost, tentative, heap):
+        if cost < tentative.get(id(node), float("inf")):
+            tentative[id(node)] = cost
+            heapq.heappush(heap, (cost, id(node), node))
+
+    @staticmethod
+    def _has_cycle(graph):
+        # graph maps id(node) -> [node, ...]; detects any directed cycle.
+        color = {}
+        for start_id, start_children in graph.items():
+            if start_id in color:
+                continue
+            color[start_id] = 1
+            stack = [(start_id, iter(start_children))]
+            while stack:
+                node_id, children = stack[-1]
+                for child in children:
+                    child_id = id(child)
+                    child_color = color.get(child_id, 0)
+                    if child_color == 1:
+                        return True
+                    if child_color == 0:
+                        color[child_id] = 1
+                        stack.append((child_id, iter(graph.get(child_id, ()))))
+                        break
+                else:
+                    color[node_id] = 2
+                    stack.pop()
+        return False
+
+    def _push_candidate(self, edge, indices):
+        if indices in edge.visited:
+            return
+        cost = edge.weight
+        shape = (edge.branch, self._rule_rank[id(edge.packed.rule)])
+        items = []
+        pos = 0
+        for child in edge.children:
+            if isinstance(child, SymbolNode):
+                derived = self._derived.get(id(child))
+                if derived is None or indices[pos] >= len(derived):
+                    return
+                item = derived[indices[pos]]
+                pos += 1
+            else:
+                item = (0, (), child, ())
+            cost += item[0]
+            shape += item[1]
+            items.append(item)
+        edge.visited.add(indices)
+        heapq.heappush(self._heap, (cost, shape, self._seq, edge, indices, tuple(items)))
+        self._seq += 1
+
+    def _materialize(self, node, item):
+        derived = self._derived[id(node)]
+        derived.append(item)
+        index = len(derived) - 1
+        for edge, pos in self._dependents.get(id(node), ()):
+            si = edge.sym_positions.index(pos)
+            if len(edge.sym_positions) == 1:
+                self._push_candidate(edge, (index,))
+            else:
+                other = edge.children[edge.sym_positions[1 - si]]
+                if isinstance(other, SymbolNode) and not self._derived.get(id(other)):
+                    continue
+                indices = [0, 0]
+                indices[si] = index
+                self._push_candidate(edge, tuple(indices))
+
+    def _advance(self):
+        cost, shape, _, edge, indices, items = heapq.heappop(self._heap)
+        self._materialize(edge.parent, (cost, shape, edge.packed, items))
+        self.expansions += 1
+        if len(edge.sym_positions) == 2:
+            for si, pos in enumerate(edge.sym_positions):
+                child = edge.children[pos]
+                if isinstance(child, SymbolNode) and indices[si] + 1 < len(self._derived[id(child)]):
+                    new_indices = list(indices)
+                    new_indices[si] += 1
+                    self._push_candidate(edge, tuple(new_indices))
+
+    def _next_derivation(self):
+        if self._cyclic:
+            root_derived = self._derived[id(self.root)]
+            while len(root_derived) <= self._root_pos:
+                if not self._heap:
+                    return None
+                self._advance()
+            item = root_derived[self._root_pos]
+        else:
+            try:
+                item = self._stream(self.root).get(self._root_pos)
+            except IndexError:
+                return None
+        self._root_pos += 1
+        return item
+
+    def _next_seq(self):
+        self._seq += 1
+        return self._seq
+
+    def _stream(self, node):
+        # Demand-driven stream of a symbol node's derivations (acyclic forests).
+        stream = self._streams.get(id(node))
+        if stream is None:
+            stream = self._streams[id(node)] = _SymbolStream(self, node)
+        return stream
+
+    def _build_tree(self, item):
+        stack = [(item, False)]
+        results = []
+        while stack:
+            current, expanded = stack.pop()
+            node = current[2]
+            if isinstance(node, TokenNode):
+                results.append(node.token)
+            elif not expanded:
+                stack.append((current, True))
+                for child in reversed(current[3]):
+                    stack.append((child, False))
+            else:
+                child_count = len(current[3])
+                children = results[len(results) - child_count:]
+                del results[len(results) - child_count:]
+                flat = []
+                for child in children:
+                    if isinstance(child, list):
+                        flat.extend(child)
+                    else:
+                        flat.append(child)
+                packed = node
+                if packed.parent.is_intermediate:
+                    results.append(flat)
+                else:
+                    results.append(self.tree_class(packed.rule.origin.name, flat))
+        return results[0]
+
+    def _next_pair(self):
+        if self.k is not None and self._yielded >= self.k:
+            raise StopIteration
+        while True:
+            item = self._next_derivation()
+            if item is None:
+                raise StopIteration
+            tree = self._build_tree(item)
+            if self._dedup_key is not None:
+                key = self._dedup_key(tree)
+                if key in self._seen_keys:
+                    continue
+                self._seen_keys.add(key)
+            self._yielded += 1
+            return tree, item[0]
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self._next_pair()[0]
+
+    def with_costs(self):
+        """Like iterating over the iterator, but yields ``(tree, cost)`` pairs."""
+        while True:
+            try:
+                yield self._next_pair()
+            except StopIteration:
+                return
+
+
+class _SymbolStream:
+    """Lazily produces the derivations of one symbol node, cheapest first,
+    by merging the streams of its packed-node children.
+
+    Only used for acyclic forests: requesting an item recursively pulls
+    items from the streams of child nodes, which is guaranteed to terminate.
+    """
+    __slots__ = ('enum', 'edge_streams', 'cache', 'heap', 'next_index')
+
+    def __init__(self, enum, node):
+        self.enum = enum
+        self.edge_streams = [_EdgeStream(enum, edge) for edge in enum._edges[id(node)]]
+        self.cache = []
+        self.heap = None
+        self.next_index = [0] * len(self.edge_streams)
+
+    def get(self, index):
+        if self.heap is None:
+            self.heap = []
+            for edge_index in range(len(self.edge_streams)):
+                self._offer(edge_index)
+        while len(self.cache) <= index:
+            if not self.heap:
+                raise IndexError
+            _, _, _, edge_index, item = heapq.heappop(self.heap)
+            self.cache.append(item)
+            self._offer(edge_index)
+        return self.cache[index]
+
+    def _offer(self, edge_index):
+        edge_stream = self.edge_streams[edge_index]
+        item_index = self.next_index[edge_index]
+        try:
+            item = edge_stream.get(item_index)
+        except IndexError:
+            return
+        self.next_index[edge_index] = item_index + 1
+        heapq.heappush(self.heap, (item[0], item[1], self.enum._next_seq(), edge_index, item))
+
+
+class _EdgeStream:
+    """Lazily produces the derivations of a single packed node, cheapest first."""
+    __slots__ = ('enum', 'edge', 'cache', 'heap', 'visited')
+
+    def __init__(self, enum, edge):
+        self.enum = enum
+        self.edge = edge
+        self.cache = []
+        self.heap = None
+        self.visited = set()
+
+    def get(self, index):
+        while len(self.cache) <= index:
+            self._produce()
+        return self.cache[index]
+
+    def _child_item(self, child, index):
+        if isinstance(child, TokenNode):
+            if index == 0:
+                return (0, (), child, ())
+            raise IndexError
+        return self.enum._stream(child).get(index)
+
+    def _combine(self, sym_items):
+        edge = self.edge
+        cost = edge.weight
+        shape = (edge.branch, self.enum._rule_rank[id(edge.packed.rule)])
+        items = []
+        sym_items = iter(sym_items)
+        for child in edge.children:
+            if isinstance(child, SymbolNode):
+                item = next(sym_items)
+            else:
+                item = (0, (), child, ())
+            cost += item[0]
+            shape += item[1]
+            items.append(item)
+        return (cost, shape, edge.packed, tuple(items))
+
+    def _produce(self):
+        sym_count = len(self.edge.sym_positions)
+        if sym_count == 0:
+            if self.cache:
+                raise IndexError
+            self.cache.append(self._combine(()))
+        elif sym_count == 1:
+            child = self.edge.children[self.edge.sym_positions[0]]
+            item = self._child_item(child, len(self.cache))
+            self.cache.append(self._combine((item,)))
+        else:
+            if self.heap is None:
+                self.heap = []
+                self._offer_pair(0, 0)
+            if not self.heap:
+                raise IndexError
+            _, _, _, i, j, item = heapq.heappop(self.heap)
+            self.cache.append(item)
+            self._offer_pair(i + 1, j)
+            self._offer_pair(i, j + 1)
+        self.enum.expansions += 1
+
+    def _offer_pair(self, i, j):
+        if (i, j) in self.visited:
+            return
+        children = self.edge.children
+        positions = self.edge.sym_positions
+        try:
+            first = self._child_item(children[positions[0]], i)
+            second = self._child_item(children[positions[1]], j)
+        except IndexError:
+            return
+        self.visited.add((i, j))
+        item = self._combine((first, second))
+        heapq.heappush(self.heap, (item[0], item[1], self.enum._next_seq(), i, j, item))
