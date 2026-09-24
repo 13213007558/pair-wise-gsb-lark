@@ -175,6 +175,52 @@ except VisitError as e:
 ```
 
 
+## Repairing invalid input with a budgeted search
+
+When the LALR parser hits an unexpected token, \`InteractiveParser.accepts()\` can
+say which tokens are allowed right now, but not which edit would let the rest of
+the input parse too. \`repair_search()\` fills that gap: it searches for the
+cheapest token-level edits (insert, delete, replace) and verifies each candidate
+plan by parsing the remaining input through to the end.
+
+The search never runs parser callbacks (transformers), so it is safe to use with
+transformers that have side-effects. Only the plan you choose to apply runs the
+callbacks, exactly as a normal parse would.
+
+\`\`\`python
+from lark import Lark
+from lark.exceptions import UnexpectedToken
+
+parser = Lark(r"""
+    start: "[" num ("," num)* "]"
+    ?num: SIGNED_NUMBER
+    %import common.SIGNED_NUMBER
+    %ignore " "
+""", parser="lalr")
+
+try:
+    parser.parse("[0, 1, 2")
+except UnexpectedToken as e:
+    ip = e.interactive_parser
+    result = ip.repair_search(first_token=e.token, k=3, budget=10000)
+    for plan in result.plans:
+        print(plan.cost, list(plan.edits))
+    if not result.optimal:
+        print("budget exhausted: cheaper plans may exist")
+    # Apply the cheapest plan; runs the callbacks like a normal parse
+    tree = ip.apply_repair(result.best, result.tokens)
+\`\`\`
+
+Prints out:
+
+\`\`\`python
+1 [RepairEdit('insert', 0, 'RSQB')]
+\`\`\`
+
+The costs of insert/delete/replace, the candidate terminals, the number of
+plans (\`k\`) and the search \`budget\` are all configurable. If the budget runs
+out before the search space is exhausted, \`result.optimal\` is False.
+
 ## Adding a Progress Bar to Parsing with tqdm
 
 Parsing large files can take a long time, even with the `parser='lalr'` option. To make this process more user-friendly, it's useful to add a progress bar. One way to achieve this is to use the `InteractiveParser` to display each token as it is processed. In this example, we use [tqdm](https://github.com/tqdm/tqdm), but it should be easy to adapt to other kinds of progress bars.

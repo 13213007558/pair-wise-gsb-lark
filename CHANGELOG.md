@@ -1,3 +1,9 @@
+v1.4 (unreleased)
+
+- Added `InteractiveParser.repair_search()` and `InteractiveParser.apply_repair()`:
+  a budgeted search for the cheapest token edits (insert/delete/replace) that
+  let a failed LALR parse run to completion, without executing parser callbacks
+
 v1.0
 
 - `maybe_placeholders` is now True by default
