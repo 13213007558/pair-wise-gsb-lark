@@ -11,6 +11,25 @@ from .grammar import Terminal, Symbol
 
 from .tree_matcher import TreeMatcher, is_discarded_terminal, parse_rulename
 from .utils import is_id_continue
+from .exceptions import LarkError
+
+
+class MissingTerminalGenerator(NotImplementedError, LarkError):
+    """Raised when reconstruction needs text for a terminal that has no
+    explicit textual representation (e.g. a discarded regexp terminal),
+    and no generator was provided for it via ``term_subs``.
+
+    Attributes:
+        terminal: Name of the terminal that is missing a generator.
+    """
+
+    def __init__(self, terminal: str) -> None:
+        super().__init__(
+            "Reconstructing regexps not supported yet: %s. "
+            "Provide a generator for it via term_subs." % terminal
+        )
+        self.terminal = terminal
+
 
 def is_iter_empty(i):
     try:
@@ -43,7 +62,7 @@ class WriteTokensTransformer(Transformer_InPlace):
                 except KeyError:
                     t = self.tokens[sym.name]
                     if not isinstance(t.pattern, PatternStr):
-                        raise NotImplementedError("Reconstructing regexps not supported yet: %s" % t)
+                        raise MissingTerminalGenerator(sym.name)
 
                     v = t.pattern.value
                 to_write.append(v)
