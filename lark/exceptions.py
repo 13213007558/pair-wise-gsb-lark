@@ -25,6 +25,12 @@ class GrammarError(LarkError):
     pass
 
 
+class InfiniteAmbiguityError(LarkError):
+    """The forest contains infinitely many derivations of the same minimal
+    cost, so a complete cost-ordered enumeration cannot be provided."""
+    pass
+
+
 class ParseError(LarkError):
     pass
 

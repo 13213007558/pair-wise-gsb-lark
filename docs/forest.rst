@@ -30,7 +30,7 @@ SymbolNode
 ----------
 
 .. autoclass:: lark.parsers.earley_forest.SymbolNode
-   :members: is_ambiguous, children
+   :members: is_ambiguous, children, iter_topk
 
 PackedNode
 ----------
@@ -63,3 +63,20 @@ handles_ambiguity
 -----------------
 
 .. autofunction:: lark.parsers.earley_forest.handles_ambiguity
+
+TopKForestEnumerator
+--------------------
+
+The forest may represent thousands of parse trees, so expanding it fully
+and sorting the trees afterwards is not always feasible.
+``TopKForestEnumerator`` enumerates complete parse trees lazily, in order
+of increasing rule cost, expanding only the combinations needed to produce
+the requested trees. The cost of a tree is the sum of the costs of its rule
+applications.
+
+If the forest contains a cycle of zero-cost derivations (created by nullable
+recursion), it has infinitely many parse trees of the same minimal cost, and
+``lark.exceptions.InfiniteAmbiguityError`` is raised.
+
+.. autoclass:: lark.parsers.earley_topk.TopKForestEnumerator
+   :members: take

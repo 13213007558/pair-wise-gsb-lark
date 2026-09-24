@@ -89,6 +89,21 @@ class SymbolNode(ForestNode):
             self.load_paths()
         return sorted(self._children, key=attrgetter('sort_key'))
 
+    def iter_topk(self, k=None, rule_cost=None, default_cost=0, tree_class=Tree, dedup=False):
+        """Lazily enumerate this (sub-)forest's parse trees, cheapest first.
+
+        The cost of a tree is the sum of the costs of its rule applications.
+        Returns a ``TopKForestEnumerator`` when ``k`` is None, otherwise
+        the list of the ``k`` cheapest ``ScoredTree(cost, tree)`` pairs.
+        See ``lark.parsers.earley_topk`` for details.
+        """
+        from .earley_topk import TopKForestEnumerator
+        enumerator = TopKForestEnumerator(self, rule_cost=rule_cost, default_cost=default_cost,
+                                          tree_class=tree_class, dedup=dedup)
+        if k is None:
+            return enumerator
+        return enumerator.take(k)
+
     def __iter__(self):
         return iter(self._children)
 
