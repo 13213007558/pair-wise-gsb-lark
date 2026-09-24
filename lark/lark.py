@@ -10,6 +10,7 @@ from typing import (
 )
 if TYPE_CHECKING:
     from .parsers.lalr_interactive_parser import InteractiveParser
+    from .incremental import IncrementalSession
     from .tree import ParseTree
     from .visitors import Transformer
     from typing import Literal
@@ -710,7 +711,37 @@ class Lark(Serialize, Generic[_Return_T]):
 
         See Also: ``Lark.parse()``
         """
-        return self.parser.parse_interactive(text, start=start)
+
+    def incremental_session(self, start: Optional[str]=None, *, pure_callbacks: bool=False) -> 'IncrementalSession':
+        """Create an incremental parsing session over a token sequence. Only works when parser='lalr'.
+
+        The session parses a token sequence with stable identities (unchanged
+        tokens must be the same objects between parses), and applies edits as a
+        contiguous replacement range, re-parsing only from the earliest
+        affected token.  See the lark.incremental module for details.
+
+        Parameters:
+            start (str, optional): Start symbol
+            pure_callbacks: Must be set to True to confirm that every callback
+                (rule callbacks, terminal callbacks and any transformer) is a
+                pure function of its children, without side effects.  The
+                session skips re-running callbacks for unchanged input and
+                reuses their previous results, which is only sound for pure
+                callbacks; otherwise a ConfigurationError is raised.
+
+        Returns:
+            A new IncrementalSession instance.
+        """
+        if self.options.parser != 'lalr':
+            raise ConfigurationError("incremental_session() currently only works with parser='lalr'")
+        if not pure_callbacks:
+            raise ConfigurationError(
+                "incremental_session() reuses previous parse results and does not re-run callbacks "
+                "for unchanged input. Pass pure_callbacks=True to confirm that all callbacks "
+                "(including any transformer) are pure functions of their children, without side effects."
+            )
+        from .incremental import IncrementalSession
+        return IncrementalSession(self.parser.parser, self.parser._verify_start(start))
 
     def parse(self, text: LarkInput, start: Optional[str]=None, on_error: 'Optional[Callable[[UnexpectedInput], bool]]'=None) -> _Return_T:
         """Parse the given text, according to the options provided.
