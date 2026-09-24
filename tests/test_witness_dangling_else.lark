@@ -1,0 +1,3 @@
+start: "if" start "else" start -> ifelse
+     | "if" start -> ifonly
+     | "a"

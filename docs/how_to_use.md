@@ -133,6 +133,15 @@ p = Lark(collision_grammar, parser='lalr', strict=True)
 # lark.exceptions.GrammarError: Shift/Reduce conflict for terminal A. [strict-mode]
 ```
 
+The error message includes a witness report to help locate the problem:
+
+- A terminal sequence that reaches the conflict state, verified by replaying it through the parser state machine (nonterminals, including nullable ones, are expanded to terminals - they never appear as input).
+- The two competing actions at that point (shift vs. reduce, or the colliding reduces), with the rules shown together with their aliases and import-qualified names.
+- When both actions can be extended to full parses of the same input, the two derivations are printed, proving the grammar is ambiguous on that input.
+- Otherwise, the report says so explicitly: the conflict state is reachable, but no two-tree witness was found. That can mean an LALR-only conflict caused by merged states (the grammar may be unambiguous, e.g. LR(1) but not LALR(1)), or a witness beyond the search budget.
+
+The witness search is bounded by an input-length budget and a state budget; when a budget is exceeded, the report states which one and that the result is inconclusive.
+
 ## Tools
 
 ### Stand-alone parser

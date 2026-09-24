@@ -28,6 +28,8 @@ from .test_logger import Testlogger
 
 from .test_parser import *  # We define __all__ to list which TestSuites to run
 
+from .test_lalr_witness import TestLalrWitness
+
 if sys.version_info >= (3, 10):
     from .test_pattern_matching import TestPatternMatching
 
