@@ -1,0 +1,10 @@
+// Example 3, grammar B: equivalent rewrite with a nullable tail rule.
+start: expr
+expr: term rest
+rest: PLUS term rest |
+term: NUM
+
+PLUS: "+"
+NUM: /[0-9]+/
+%ignore " "
+

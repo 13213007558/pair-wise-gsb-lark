@@ -1,0 +1,8 @@
+// Example 1, grammar A: comma-separated list, commas mandatory.
+start: item (COMMA item)*
+item: NAME
+
+NAME: /[a-z]+/
+COMMA: ","
+%ignore " "
+

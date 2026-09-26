@@ -1,0 +1,9 @@
+// Example 2, grammar A: left-associative addition.
+start: expr
+expr: expr PLUS term | term
+term: NUM
+
+PLUS: "+"
+NUM: /[0-9]+/
+%ignore " "
+

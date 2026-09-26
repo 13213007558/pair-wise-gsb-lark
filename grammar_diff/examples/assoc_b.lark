@@ -1,0 +1,10 @@
+// Example 2, grammar B: right-associative addition.
+// Same accepted language as A; only the parse-tree grouping differs.
+start: expr
+expr: term PLUS expr | term
+term: NUM
+
+PLUS: "+"
+NUM: /[0-9]+/
+%ignore " "
+

@@ -1,0 +1,9 @@
+// Example 3, grammar A: EBNF repetition.
+start: expr
+expr: term (PLUS term)*
+term: NUM
+
+PLUS: "+"
+NUM: /[0-9]+/
+%ignore " "
+
