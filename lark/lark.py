@@ -737,6 +737,40 @@ class Lark(Serialize, Generic[_Return_T]):
             raise NotImplementedError("The on_error option is only implemented for the LALR(1) parser.")
         return self.parser.parse(text, start=start, on_error=on_error)
 
+    def parse_kbest(self, text: LarkInput, rule_cost, start: Optional[str]=None, k: Optional[int]=None):
+        """Parse the given text and iterate the parse trees from cheapest to
+        most expensive, according to per-rule costs. Earley parser only.
+
+        The iteration is lazy: trees are expanded best-first, so requesting
+        only a few trees never expands the whole parse forest. The returned
+        iterator reports how many derivation nodes were actually expanded
+        via its nodes_expanded attribute.
+
+        Parameters:
+            text (LarkInput): Text to be parsed, as str or bytes.
+            rule_cost: A callable receiving a Rule and returning a
+                non-negative cost, or a mapping of Rule (or rule name) to
+                cost. Rules missing from the mapping get cost 0. The
+                callback is invoked at most once per rule.
+            start (str, optional): Required if Lark was given multiple possible start symbols.
+            k (int, optional): If given, stop after yielding k unique trees.
+
+        Returns:
+            A KBestIterator yielding Tree instances in non-decreasing total
+            rule-cost order. Ties use a stable order. Identical trees (e.g.
+            the same structure reached through different intermediate
+            nodes) are yielded only once. See
+            lark.parsers.earley_kbest for the full semantics, including the
+            handling of cyclic (nullable) grammars.
+
+        :raises ConfigurationError: If the parser is not 'earley'.
+        :raises TypeError: If rule_cost is neither callable nor a mapping.
+        :raises ValueError: If a rule cost is negative or NaN.
+        """
+        if self.options.parser != 'earley':
+            raise ConfigurationError("parse_kbest() requires parser='earley'")
+        return self.parser.parse_kbest(text, start=start, rule_cost=rule_cost, k=k)
+
     def scan(self, text: TextOrSlice, start: Optional[str]=None) -> Iterator['ScanMatch[_Return_T]']:
         """Scan the input text for non-overlapping matches of this grammar.
         Only works when ``parser='lalr'`` and without ``postlex``.

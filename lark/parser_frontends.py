@@ -155,6 +155,14 @@ class ParsingFrontend(Serialize):
         stream = self._make_lexer_thread(text)
         return self.parser.parse_interactive(stream, chosen_start)
 
+    def parse_kbest(self, text: Optional[LarkInput], start=None, rule_cost=None, k=None):
+        """See Lark.parse_kbest()."""
+        if self.parser_conf.parser_type != 'earley':
+            raise ConfigurationError("parse_kbest() requires parser='earley'")
+        chosen_start = self._verify_start(start)
+        stream = self._make_lexer_thread(text)
+        return self.parser.parse_kbest(stream, chosen_start, rule_cost, k=k)
+
     def scan(self, text: TextOrSlice, start: Optional[str]=None) -> Iterator[ScanMatch]:
         """See ``Lark.scan``."""
         if self.parser_conf.parser_type != 'lalr':

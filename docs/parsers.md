@@ -25,6 +25,16 @@ Lark provides the following options to combat ambiguity:
 
 3) As an advanced feature, users may use specialized visitors to iterate the SPPF themselves. There is also [a 3rd party utility for iterating over the SPPF](https://github.com/chanicpanic/lark-ambig-tools).
 
+**K-best iteration**
+
+Lark.parse_kbest() offers a fourth option: iterating the parse trees from cheapest to most expensive, according to per-rule costs supplied by the caller.
+
+    parser = Lark(grammar, parser='earley')
+    for tree in parser.parse_kbest(text, rule_cost={'add': 1, 'mul': 2}, k=10):
+        ...
+
+rule_cost may be a callable receiving a Rule, or a mapping of Rule (or rule name) to a non-negative cost. The iteration is lazy, so asking for only a few trees never expands the whole forest; the iterator's nodes_expanded attribute reports how many derivation nodes were actually expanded. Trees with equal cost are ordered stably, identical trees are yielded only once, and cyclic (nullable) grammars are handled without hanging. See lark.parsers.earley_kbest for the full semantics.
+
 **lexer="dynamic_complete"**
 
 Earley's "dynamic" lexer uses regular expressions in order to tokenize the text. It tries every possible combination of terminals, but it matches each terminal exactly once, returning the longest possible match.

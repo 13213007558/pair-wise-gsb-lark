@@ -260,7 +260,7 @@ class Parser:
         assert i == len(columns)-1
         return to_scan
 
-    def parse(self, lexer, start):
+    def _parse_to_forest(self, lexer, start):
         assert start, start
         start_symbol = NonTerminal(start)
 
@@ -299,7 +299,10 @@ class Parser:
             else:
                 debug_walker.visit(solution, "sppf.png")
 
+        return solution
 
+    def parse(self, lexer, start):
+        solution = self._parse_to_forest(lexer, start)
         if self.Tree is not None:
             # Perform our SPPF -> AST conversion
             # Disable the ForestToParseTree cache when ambiguity='resolve'
@@ -310,3 +313,12 @@ class Parser:
 
         # return the root of the SPPF
         return solution
+
+    def parse_kbest(self, lexer, start, rule_cost, k=None):
+        """Parse the input and return a KBestIterator over the parse trees,
+        cheapest derivation first. See lark.parsers.earley_kbest for details.
+        """
+        from .earley_kbest import KBestIterator
+        solution = self._parse_to_forest(lexer, start)
+        return KBestIterator(solution, rule_cost, callbacks=self.callbacks,
+                             tree_class=self.Tree or Tree, k=k)
