@@ -146,6 +146,16 @@ class ParsingFrontend(Serialize):
         stream = self._make_lexer_thread(text)
         return self.parser.parse(stream, chosen_start, **kw)
 
+    def parse_kbest(self, text: Optional[LarkInput], start=None, rule_cost=None, k=None):
+        if self.parser_conf.parser_type != 'earley':
+            raise ConfigurationError("parse_kbest() is only implemented for parser='earley'")
+        if self.lexer_conf.lexer_type in ("dynamic", "dynamic_complete"):
+            if isinstance(text, TextSlice) and not text.is_complete_text():
+                raise TypeError(f"Lexer {self.lexer_conf.lexer_type} does not support text slices.")
+        chosen_start = self._verify_start(start)
+        stream = self._make_lexer_thread(text)
+        return self.parser.parse_kbest(stream, chosen_start, rule_cost=rule_cost, k=k)
+
     def parse_interactive(self, text: Optional[TextOrSlice]=None, start=None):
         # TODO BREAK - Change text from Optional[str] to text: str = ''.
         #   Would break behavior of exhaust_lexer(), which currently raises TypeError, and after the change would just return []

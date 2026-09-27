@@ -14,7 +14,7 @@ from collections import deque
 
 from ..lexer import Token
 from ..tree import Tree
-from ..exceptions import UnexpectedEOF, UnexpectedToken
+from ..exceptions import UnexpectedEOF, UnexpectedToken, ConfigurationError
 from ..utils import logger, OrderedSet, dedup_list
 from .grammar_analysis import GrammarAnalyzer
 from ..grammar import NonTerminal
@@ -310,3 +310,21 @@ class Parser:
 
         # return the root of the SPPF
         return solution
+
+    def parse_kbest(self, lexer, start, rule_cost=None, k=None):
+        """Parse the input and return a KBestForestIterator over the parse
+        trees, ordered by increasing total rule cost.
+
+        See lark.parsers.earley_kbest.KBestForestIterator for the accepted
+        parameters. Not available when tree_class is None (e.g. when Lark
+        was created with ambiguity='forest').
+        """
+        from .earley_kbest import KBestForestIterator
+        if self.Tree is None:
+            raise ConfigurationError("parse_kbest() requires a tree class; it is not compatible with ambiguity='forest'")
+        tree_class, self.Tree = self.Tree, None
+        try:
+            root = self.parse(lexer, start)
+        finally:
+            self.Tree = tree_class
+        return KBestForestIterator(root, rule_cost=rule_cost, callbacks=self.callbacks, tree_class=tree_class, k=k)

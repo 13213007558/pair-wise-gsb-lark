@@ -737,6 +737,36 @@ class Lark(Serialize, Generic[_Return_T]):
             raise NotImplementedError("The on_error option is only implemented for the LALR(1) parser.")
         return self.parser.parse(text, start=start, on_error=on_error)
 
+    def parse_kbest(self, text: LarkInput, rule_cost=None, k: 'Optional[int]'=None, start: Optional[str]=None):
+        """Parse the given text and return a lazy iterator of parse trees,
+        ordered by increasing total rule cost (k-best). Earley only.
+
+        Parameters:
+            text (LarkInput): Text to be parsed, as str or bytes.
+            rule_cost: Provides the non-negative cost of each grammar rule.
+                Either a callable "rule -> cost", or a mapping of rule
+                name (or alias) to cost; missing rules default to 0.
+                The callable is invoked at most once per rule. If None,
+                every rule costs 1. Negative or NaN costs raise ValueError.
+            k (int, optional): Maximum number of trees to yield. The forest
+                is expanded lazily, so a small k avoids expanding the whole
+                forest. None means no limit.
+            start (str, optional): Required if Lark was given multiple
+                possible start symbols (using the start option).
+
+        Returns:
+            A KBestForestIterator. Iterating it yields parse trees in
+            increasing total cost; trees of equal cost are yielded in a
+            stable order. Duplicate trees that only differ in their
+            intermediate nodes are yielded once. Derivations that loop
+            through an SPPF cycle (infinite ambiguity from nullable rules)
+            are discarded, so iteration always terminates. The iterator's
+            stats attribute reports how much of the forest was expanded.
+
+        :raises ConfigurationError: If parser != 'earley', or ambiguity='forest'.
+        """
+        return self.parser.parse_kbest(text, start=start, rule_cost=rule_cost, k=k)
+
     def scan(self, text: TextOrSlice, start: Optional[str]=None) -> Iterator['ScanMatch[_Return_T]']:
         """Scan the input text for non-overlapping matches of this grammar.
         Only works when ``parser='lalr'`` and without ``postlex``.

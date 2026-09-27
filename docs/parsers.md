@@ -23,7 +23,21 @@ Lark provides the following options to combat ambiguity:
 
 2) Users may choose to receive the set of all possible parse-trees (using ambiguity='explicit'), and choose the best derivation themselves. While simple and flexible, it comes at the cost of space and performance, and so it isn't recommended for highly ambiguous grammars, or very long inputs.
 
-3) As an advanced feature, users may use specialized visitors to iterate the SPPF themselves. There is also [a 3rd party utility for iterating over the SPPF](https://github.com/chanicpanic/lark-ambig-tools).
+3) Users may iterate the parse-trees k-best style (using `Lark.parse_kbest()`), assigning each grammar rule a non-negative cost. Trees are yielded lazily, from the lowest total rule cost to the highest, without expanding the whole forest when only a few trees are needed.
+
+4) As an advanced feature, users may use specialized visitors to iterate the SPPF themselves. There is also [a 3rd party utility for iterating over the SPPF](https://github.com/chanicpanic/lark-ambig-tools).
+
+**k-best iteration**
+
+`Lark.parse_kbest(text, rule_cost, k=None, start=None)` returns a lazy iterator of parse trees, ordered by increasing total rule cost:
+
+```python
+parser = Lark(grammar, parser='earley')
+for tree in parser.parse_kbest(text, rule_cost={'cheap_rule': 0, 'fancy_rule': 5}, k=3):
+    ...
+```
+
+`rule_cost` may also be a callable `rule -> cost`; it is invoked at most once per rule. Costs must be non-negative numbers (`ValueError` otherwise). Trees of equal cost are yielded in a stable order. Duplicate trees that differ only in their intermediate nodes are yielded once, and derivations that loop through an SPPF cycle (infinite ambiguity from nullable rules) are discarded, so iteration always terminates. The iterator's `stats` attribute reports how much of the forest was actually expanded (`nodes_expanded`, `candidates_popped`, `cycles_pruned`, `duplicates_skipped`).
 
 **lexer="dynamic_complete"**
 
